@@ -246,6 +246,12 @@ and  action = {org->cal, cal->org, error:org->cal, error:cal->org}.")
 (defvar org-caldav-oauth2-tokens nil
   "Tokens for OAuth2 authentication.")
 
+(defvar org-caldav-username nil
+  "Username for basic auth")
+
+(defvar org-caldav-password nil
+  "Password for basic auth")
+
 (defvar org-caldav-previous-files nil
   "Files that were synced during previous run.")
 
@@ -374,17 +380,23 @@ configured correctly, and throw an user error otherwise."
                                    extra-headers)
   "Retrieve URL with REQUEST-METHOD, REQUEST-DATA and EXTRA-HEADERS.
 This will switch to OAuth2 if necessary."
-  (if (org-caldav-use-oauth2)
-      (error "OAuth 2 is not supported yet")
-    ;; (oauth2-url-retrieve-synchronously
-    ;;  (org-caldav-retrieve-oauth2-token org-caldav-url org-caldav-calendar-id)
-    ;;  url request-method request-data
-    ;;  extra-headers)
-    (aio-await (aio-request url
-                            :type request-method
-                            :data request-data
-                            :headers extra-headers
-                            :parser 'buffer-string))))
+  (let ((auth-header `("Authorization"
+                       ,(concat "Basic "
+                                (base64-encode-string
+                                 (concat org-caldav-username
+                                         ":"
+                                         org-caldav-password))))))
+    (if (org-caldav-use-oauth2)
+        (error "OAuth 2 is not supported yet")
+      ;; (oauth2-url-retrieve-synchronously
+      ;;  (org-caldav-retrieve-oauth2-token org-caldav-url org-caldav-calendar-id)
+      ;;  url request-method request-data
+      ;;  extra-headers)
+      (aio-await (aio-request url
+                              :type request-method
+                              :data request-data
+                              :headers (append extra-headers auth-header)
+                              :parser 'buffer-string)))))
 
 (aio-defun org-caldav-request-raw (url &rest args)
   (let ((response (aio-await (apply #'org-caldav-request url args))))
@@ -502,21 +514,21 @@ If retrieve fails, do `org-caldav-retry-attempts' retries."
         eventbuffer errormessage)
     (while (and (not eventbuffer)
                 (< counter org-caldav-retry-attempts))
-      (with-current-buffer
-          (aio-await (org-caldav-request-raw
+      (let ((responsebuffer (aio-await (org-caldav-request-raw
                       (concat (org-caldav-events-url)
                               (url-hexify-string uid)
                               org-caldav-uuid-extension)
-                      "GET"))
-        (goto-char (point-min))
-        (if (looking-at "HTTP.*2[0-9][0-9]")
-            (setq eventbuffer (current-buffer))
-          ;; There was an error retrieving the event
-          (setq errormessage (buffer-substring (point-min) (point-at-eol)))
-          (setq counter (1+ counter))
-          (org-caldav-debug-print
-           1 (format "(Try %d) Error when trying to retrieve UID %s: %s"
-                     counter uid errormessage)))))
+                      "GET"))))
+        (with-current-buffer responsebuffer
+            (goto-char (point-min))
+          (if (looking-at "HTTP.*2[0-9][0-9]")
+              (setq eventbuffer (current-buffer))
+            ;; There was an error retrieving the event
+            (setq errormessage (buffer-substring (point-min) (point-at-eol)))
+            (setq counter (1+ counter))
+            (org-caldav-debug-print
+             1 (format "(Try %d) Error when trying to retrieve UID %s: %s"
+                       counter uid errormessage))))))
     (unless eventbuffer
       ;; Give up
       (error "Failed to retrieve UID %s after %d tries with error %s"
